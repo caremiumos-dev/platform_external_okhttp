@@ -17,6 +17,7 @@
 package com.squareup.okhttp;
 
 import com.squareup.okhttp.internal.Internal;
+import com.squareup.okhttp.internal.Platform;
 import com.squareup.okhttp.internal.RouteDatabase;
 import com.squareup.okhttp.internal.Util;
 import com.squareup.okhttp.internal.http.StreamAllocation;
@@ -86,8 +87,12 @@ public final class ConnectionPool {
       new LinkedBlockingQueue<Runnable>(), Util.threadFactory("OkHttp ConnectionPool", true));
 
   /** The maximum number of idle connections for each address. */
-  private final int maxIdleConnections;
+  private int maxIdleConnections;
   private final long keepAliveDurationNs;
+
+  // XTC/QTI addition: hooks the vendor TCM idle-timer client so it can ask the
+  // pool to drop idle connections.
+  private TcmIdleTimerMonitor mIdleMonitor;
   private Runnable cleanupRunnable = new Runnable() {
     @Override public void run() {
       while (true) {
@@ -122,6 +127,23 @@ public final class ConnectionPool {
     if (keepAliveDuration <= 0) {
       throw new IllegalArgumentException("keepAliveDuration <= 0: " + keepAliveDuration);
     }
+
+    this.mIdleMonitor = new TcmIdleTimerMonitor(this);
+  }
+
+  /**
+   * XTC/QTI addition: closes all currently idle connections. Invoked by the
+   * vendor TCM idle-timer client.
+   */
+  public synchronized void closeIdleConnections() {
+    int savedMaxIdleConnections = maxIdleConnections;
+    maxIdleConnections = 0;
+    try {
+      cleanupRunnable.run();
+    } catch (Exception e) {
+      Platform.get().logW("Unable to closeIdleConnections(): " + e);
+    }
+    maxIdleConnections = savedMaxIdleConnections;
   }
 
   public static ConnectionPool getDefault() {
